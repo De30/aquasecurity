@@ -25,7 +25,7 @@ var (
 		Name:       "format",
 		ConfigName: "format",
 		Shorthand:  "f",
-		Value:      report.FormatTable,
+		Value:      []string{report.FormatTable},
 		Usage:      "format (table, json, sarif, template, cyclonedx, spdx, spdx-json, github)",
 	}
 	ReportFormatFlag = Flag{
@@ -103,16 +103,20 @@ type ReportFlagGroup struct {
 }
 
 type ReportOptions struct {
-	Format         string
-	ReportFormat   string
-	Template       string
-	DependencyTree bool
-	ListAllPkgs    bool
-	IgnoreFile     string
-	ExitCode       int
-	IgnorePolicy   string
-	Output         io.Writer
-	Severities     []dbTypes.Severity
+	ReportsSettings []ReportSettings
+	ReportFormat    string
+	DependencyTree  bool
+	ListAllPkgs     bool
+	IgnoreFile      string
+	ExitCode        int
+	IgnorePolicy    string
+	Severities      []dbTypes.Severity
+}
+
+type ReportSettings struct {
+	Format   string
+	Template string
+	Output   io.Writer
 }
 
 func NewReportFlagGroup() *ReportFlagGroup {
@@ -140,61 +144,100 @@ func (f *ReportFlagGroup) Flags() []*Flag {
 }
 
 func (f *ReportFlagGroup) ToOptions(out io.Writer) (ReportOptions, error) {
-	format := getString(f.Format)
-	template := getString(f.Template)
+	var reportsSettings []ReportSettings
+	formats := getStringSlice(f.Format)
+	templates := getStringSlice(f.Template)
 	dependencyTree := getBool(f.DependencyTree)
 	listAllPkgs := getBool(f.ListAllPkgs)
-	output := getString(f.Output)
+	outputs := getStringSlice(f.Output)
 
-	if template != "" {
-		if format == "" {
-			log.Logger.Warn("'--template' is ignored because '--format template' is not specified. Use '--template' option with '--format template' option.")
-		} else if format != "template" {
-			log.Logger.Warnf("'--template' is ignored because '--format %s' is specified. Use '--template' option with '--format template' option.", format)
+	switch {
+	case len(formats) == 0 && len(outputs) == 0:
+		formats = []string{report.FormatTable}
+		outputs = []string{"stdout"}
+	case len(formats) > len(outputs):
+		for len(formats) != len(outputs) {
+			outputs = append(outputs, "stdout")
 		}
-	} else {
-		if format == report.FormatTemplate {
-			log.Logger.Warn("'--format template' is ignored because '--template' is not specified. Specify '--template' option when you use '--format template'.")
-		}
-	}
-
-	// "--list-all-pkgs" option is unavailable with "--format table".
-	// If user specifies "--list-all-pkgs" with "--format table", we should warn it.
-	if listAllPkgs && format == report.FormatTable {
-		log.Logger.Warn(`"--list-all-pkgs" cannot be used with "--format table". Try "--format json" or other formats.`)
-	}
-
-	// "--dependency-tree" option is available only with "--format table".
-	if dependencyTree {
-		log.Logger.Infof(`"--dependency-tree" only shows dependencies for "package-lock.json" files`)
-		if format != report.FormatTable {
-			log.Logger.Warn(`"--dependency-tree" can be used only with "--format table".`)
+	case len(outputs) > len(formats):
+		for len(outputs) != len(formats) {
+			formats = append(formats, report.FormatTable)
 		}
 	}
 
-	// Enable '--list-all-pkgs' if needed
-	if f.forceListAllPkgs(format, listAllPkgs, dependencyTree) {
-		listAllPkgs = true
-	}
-
-	if output != "" {
-		var err error
-		if out, err = os.Create(output); err != nil {
-			return ReportOptions{}, xerrors.Errorf("failed to create an output file: %w", err)
+	for i, format := range formats {
+		reportSettings := ReportSettings{Format: format}
+		// take a template if needed
+		if format == "template" {
+			if len(templates) == 0 {
+				return ReportOptions{}, xerrors.Errorf("template error: can't find template for %s format", format)
+			}
+			reportSettings.Template = templates[0]
+			templates = templates[1:] // remove received element
 		}
+		// take output
+		if outputs[i] == "" || outputs[i] == "stdout" {
+			reportSettings.Output = out
+		} else {
+			output, err := os.Create(outputs[i])
+			if err != nil {
+				return ReportOptions{}, xerrors.Errorf("failed to create an output file: %w", err)
+			}
+			reportSettings.Output = output
+		}
+		reportsSettings = append(reportsSettings, reportSettings)
 	}
+	/*
+		if template != "" {
+			if format == "" {
+				log.Logger.Warn("'--template' is ignored because '--format template' is not specified. Use '--template' option with '--format template' option.")
+			} else if format != "template" {
+				log.Logger.Warnf("'--template' is ignored because '--format %s' is specified. Use '--template' option with '--format template' option.", format)
+			}
+		} else {
+			if format == report.FormatTemplate {
+				log.Logger.Warn("'--format template' is ignored because '--template' is not specified. Specify '--template' option when you use '--format template'.")
+			}
+		}
+
+		// "--list-all-pkgs" option is unavailable with "--format table".
+		// If user specifies "--list-all-pkgs" with "--format table", we should warn it.
+		if listAllPkgs && format == report.FormatTable {
+			log.Logger.Warn(`"--list-all-pkgs" cannot be used with "--format table". Try "--format json" or other formats.`)
+		}
+
+		// "--dependency-tree" option is available only with "--format table".
+		if dependencyTree {
+			log.Logger.Infof(`"--dependency-tree" only shows dependencies for "package-lock.json" files`)
+			if format != report.FormatTable {
+				log.Logger.Warn(`"--dependency-tree" can be used only with "--format table".`)
+			}
+		}
+
+		// Enable '--list-all-pkgs' if needed
+		if f.forceListAllPkgs(format, listAllPkgs, dependencyTree) {
+			listAllPkgs = true
+		}
+
+		if output != "" {
+			var err error
+			if out, err = os.Create(output); err != nil {
+				return ReportOptions{}, xerrors.Errorf("failed to create an output file: %w", err)
+			}
+		}*/
 
 	return ReportOptions{
-		Format:         format,
-		ReportFormat:   getString(f.ReportFormat),
-		Template:       template,
+		ReportsSettings: reportsSettings,
+		//Format:         format,
+		ReportFormat: getString(f.ReportFormat),
+		//Template:       template,
 		DependencyTree: dependencyTree,
 		ListAllPkgs:    listAllPkgs,
 		IgnoreFile:     getString(f.IgnoreFile),
 		ExitCode:       getInt(f.ExitCode),
 		IgnorePolicy:   getString(f.IgnorePolicy),
-		Output:         out,
-		Severities:     splitSeverity(getStringSlice(f.Severity)),
+		//Output:         out,
+		Severities: splitSeverity(getStringSlice(f.Severity)),
 	}, nil
 }
 
